@@ -1,8 +1,18 @@
-# main.py - OPTIMIZED VERSION
+#use: uvicorn app.main:app --reload
+
+from app.models import User
+from app.models import Review
+from app.models import Charger
+from app.models import Vehicle
+
+from app.auth_utils import hash_password, verify_password
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi import FastAPI, Depends, Query, HTTPException
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from app.auth_utils import create_access_token
+from app.auth_utils import member_required
 from sqlalchemy.orm import Session
 from app.database import SessionLocal, Base, engine
-from app.models import Charger
 import requests
 import os
 import math
@@ -13,7 +23,7 @@ OPENROUTESERVICE_API_KEY = os.getenv("OPENROUTESERVICE_API_KEY")
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="TuniCharge API")
+app = FastAPI(title="EV Charging API")
 
 def get_db():
     db = SessionLocal()
@@ -99,10 +109,13 @@ def search_chargers(
 def get_nearby_chargers(
     lat: float = Query(..., description="User's current latitude"),
     lon: float = Query(..., description="User's current longitude"),
+    connector_type: str | None = Query(None),
     limit: int = Query(10, description="Number of nearest chargers to return", ge=1, le=27),
     radius_km: float = Query(100, description="Search radius in kilometers", ge=1, le=500),
     db: Session = Depends(get_db)
+    
 ):
+    
     """
     Find nearest chargers - OPTIMIZED VERSION.
     
@@ -117,10 +130,16 @@ def get_nearby_chargers(
         raise HTTPException(status_code=400, detail="Latitude must be between -90 and 90")
     if not (-180 <= lon <= 180):
         raise HTTPException(status_code=400, detail="Longitude must be between -180 and 180")
-    
+
     # Get all chargers from database
     chargers = db.query(Charger).all()
     
+    if connector_type:
+        chargers = [
+            c for c in chargers
+            if c.connector_type
+            and c.connector_type.lower() == connector_type.lower()
+        ]
     if not chargers:
         raise HTTPException(status_code=404, detail="No chargers found in database")
     
@@ -195,54 +214,100 @@ def get_nearby_chargers(
         "nearest_chargers": result_chargers[:limit]
     }
 
+@app.post("/auth/register")
+def register(email: str, password: str, db: Session = Depends(get_db)):
+    existing_user = db.query(User).filter(User.email == email).first()
+    
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
 
-@app.get("/chargers/nearby-fast")
-def get_nearby_chargers_fast(
-    lat: float = Query(..., description="User's current latitude"),
-    lon: float = Query(..., description="User's current longitude"),
-    limit: int = Query(10, description="Number of nearest chargers to return", ge=1, le=27),
+    user = User(
+        email=email,
+        hashed_password=hash_password(password)
+    )
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return {"message": "Account created successfully"}
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+@app.post("/auth/login")
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ):
-    """
-    SUPER FAST version - only uses straight-line distance, no routing API.
-    Perfect for quick searches when exact driving distance isn't critical.
+    user = db.query(User).filter(User.email == form_data.username).first()
     
-    Response time: < 100ms
-    """
-    # Validate coordinates
-    if not (-90 <= lat <= 90):
-        raise HTTPException(status_code=400, detail="Latitude must be between -90 and 90")
-    if not (-180 <= lon <= 180):
-        raise HTTPException(status_code=400, detail="Longitude must be between -180 and 180")
-    
-    # Get all chargers
-    chargers = db.query(Charger).all()
-    
-    if not chargers:
-        raise HTTPException(status_code=404, detail="No chargers found in database")
-    
-    # Calculate straight-line distance for all
-    chargers_with_distance = []
-    for charger in chargers:
-        distance_km = haversine_distance(lat, lon, charger.latitude, charger.longitude)
-        chargers_with_distance.append({
-            "id": charger.id,
-            "name": charger.name,
-            "city": charger.city,
-            "latitude": charger.latitude,
-            "longitude": charger.longitude,
-            "usage_type": charger.usage_type,
-            "distance_km": distance_km,
-            "duration_minutes": round((distance_km / 50) * 60, 1),  # Rough estimate
-            "distance_type": "straight_line"
-        })
-    
-    # Sort by distance
-    chargers_with_distance.sort(key=lambda x: x["distance_km"])
-    
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = create_access_token(
+        data={"user_id": user.id, "role": user.role}
+    )
+
     return {
-        "user_location": {"latitude": lat, "longitude": lon},
-        "total_chargers": len(chargers_with_distance),
-        "nearest_chargers": chargers_with_distance[:limit],
-        "note": "Distances are straight-line. Use /chargers/nearby for driving distances."
+        "access_token": token,
+        "token_type": "bearer"
     }
+
+@app.get("/users/me")
+def get_my_profile(user=Depends(member_required)):
+    return {
+        "id": user.id,
+        "email": user.email,
+        "role": user.role
+    }
+
+@app.post("/chargers/{charger_id}/reviews")
+def add_review(
+    charger_id: int,
+    rating: int,
+    comment: str | None = None,
+    user=Depends(member_required),
+    db: Session = Depends(get_db)
+):
+    if rating < 1 or rating > 5:
+        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
+    charger = db.query(Charger).filter(Charger.id == charger_id).first()
+    if not charger:
+        raise HTTPException(status_code=404, detail="Charger not found")
+
+    review = Review(
+        rating=rating,
+        comment=comment,
+        user_id=user.id,
+        charger_id=charger_id
+    )
+
+    db.add(review)
+    db.commit()
+    db.refresh(review)
+
+    return {"message": "Review added successfully"}
+
+@app.get("/chargers/{charger_id}/reviews")
+def get_reviews(charger_id: int, db: Session = Depends(get_db)):
+    return db.query(Review).filter(Review.charger_id == charger_id).all()
+
+@app.post("/users/me/vehicle")
+def add_or_update_vehicle(
+    connector_type: str,
+    user=Depends(member_required),
+    db: Session = Depends(get_db)
+):
+    vehicle = db.query(Vehicle).filter(Vehicle.user_id == user.id).first()
+
+    if vehicle:
+        vehicle.connector_type = connector_type
+    else:
+        vehicle = Vehicle(
+            connector_type=connector_type,
+            user_id=user.id
+        )
+        db.add(vehicle)
+
+    db.commit()
+    return {"message": "Vehicle saved successfully"}

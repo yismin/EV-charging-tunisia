@@ -30,6 +30,7 @@ def save_chargers_to_db(data):
             usage_type=usage.get("Title", "Unknown")
         )
         db.add(charger)
+        
     db.commit()
     db.close()
 
