@@ -19,20 +19,37 @@ def fetch_chargers(country_code="TN", max_results=100):
 
 def save_chargers_to_db(data):
     db = SessionLocal()
+
     for item in data:
         info = item.get("AddressInfo", {})
         usage = item.get("UsageType", {})
+
+        # --- EXTRACT CONNECTOR TYPES ---
+        connections = item.get("Connections", [])
+        connector_titles = []
+
+        for c in connections:
+            ctype = c.get("ConnectionType", {})
+            title = ctype.get("Title")
+            if title:
+                connector_titles.append(title)
+
+        connector_type = ", ".join(connector_titles) if connector_titles else "Unknown"
+
         charger = Charger(
             name=info.get("Title", "Unknown"),
             city=info.get("Town", "Unknown"),
             latitude=info.get("Latitude", 0),
             longitude=info.get("Longitude", 0),
-            usage_type=usage.get("Title", "Unknown")
+            usage_type=usage.get("Title", "Unknown"),
+            connector_type=connector_type
         )
+
         db.add(charger)
-        
+
     db.commit()
     db.close()
+
 
 if __name__ == "__main__":
     chargers = fetch_chargers()

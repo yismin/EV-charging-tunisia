@@ -1,10 +1,12 @@
 #use: uvicorn app.main:app --reload
-
+import json
 from app.models import User
 from app.models import Review
 from app.models import Charger
 from app.models import Vehicle
-
+from app.models import Favorite
+from app.models import Trip
+from app.auth_utils import member_required
 from app.auth_utils import hash_password, verify_password
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi import FastAPI, Depends, Query, HTTPException
@@ -135,14 +137,15 @@ def get_nearby_chargers(
     chargers = db.query(Charger).all()
     
     if connector_type:
+        ct = connector_type.lower().replace(" ", "").replace("-", "")
         chargers = [
             c for c in chargers
             if c.connector_type
-            and c.connector_type.lower() == connector_type.lower()
+            and ct in c.connector_type.lower().replace(" ", "").replace("-", "")
         ]
     if not chargers:
-        raise HTTPException(status_code=404, detail="No chargers found in database")
-    
+        raise HTTPException(status_code=404, detail="No chargers found")
+
     # STEP 1: Calculate straight-line distance to ALL chargers (instant)
     chargers_with_straight_distance = []
     for charger in chargers:
@@ -295,19 +298,243 @@ def get_reviews(charger_id: int, db: Session = Depends(get_db)):
 @app.post("/users/me/vehicle")
 def add_or_update_vehicle(
     connector_type: str,
+    range_km: float | None = None,
     user=Depends(member_required),
     db: Session = Depends(get_db)
 ):
-    vehicle = db.query(Vehicle).filter(Vehicle.user_id == user.id).first()
+    vehicle = db.query(Vehicle).filter(
+        Vehicle.user_id == user.id
+    ).first()
 
     if vehicle:
         vehicle.connector_type = connector_type
+        vehicle.range_km = range_km
     else:
         vehicle = Vehicle(
+            user_id=user.id,
             connector_type=connector_type,
-            user_id=user.id
+            range_km=range_km
         )
         db.add(vehicle)
 
     db.commit()
     return {"message": "Vehicle saved successfully"}
+
+@app.get("/users/me/vehicle")
+def get_my_vehicle(
+    user=Depends(member_required),
+    db: Session = Depends(get_db)
+):
+    return db.query(Vehicle).filter(
+        Vehicle.user_id == user.id
+    ).first()
+
+@app.post("/favorites/{charger_id}")
+def add_favorite(
+    charger_id: int,
+    user=Depends(member_required),
+    db: Session = Depends(get_db)
+):
+    # Check charger exists
+    charger = db.query(Charger).filter(Charger.id == charger_id).first()
+    if not charger:
+        raise HTTPException(status_code=404, detail="Charger not found")
+
+    # Check duplicate
+    existing = db.query(Favorite).filter(
+        Favorite.user_id == user.id,
+        Favorite.charger_id == charger_id
+    ).first()
+
+    if existing:
+        return {"message": "Charger already in favorites"}
+
+    favorite = Favorite(
+        user_id=user.id,
+        charger_id=charger_id
+    )
+
+    db.add(favorite)
+    db.commit()
+
+    return {"message": "Charger added to favorites"}
+
+@app.delete("/favorites/{charger_id}")
+def remove_favorite(
+    charger_id: int,
+    user=Depends(member_required),
+    db: Session = Depends(get_db)
+):
+    favorite = db.query(Favorite).filter(
+        Favorite.user_id == user.id,
+        Favorite.charger_id == charger_id
+    ).first()
+
+    if not favorite:
+        raise HTTPException(status_code=404, detail="Favorite not found")
+
+    db.delete(favorite)
+    db.commit()
+
+    return {"message": "Charger removed from favorites"}
+
+@app.get("/favorites")
+def get_my_favorites(
+    user=Depends(member_required),
+    db: Session = Depends(get_db)
+):
+    favorites = db.query(Favorite).filter(
+        Favorite.user_id == user.id
+    ).all()
+
+    charger_ids = [f.charger_id for f in favorites]
+
+    chargers = db.query(Charger).filter(
+        Charger.id.in_(charger_ids)
+    ).all()
+
+    return chargers
+
+@app.get("/favorites/check/{charger_id}")
+def check_favorite(
+    charger_id: int,
+    user=Depends(member_required),
+    db: Session = Depends(get_db)
+):
+    exists = db.query(Favorite).filter(
+        Favorite.user_id == user.id,
+        Favorite.charger_id == charger_id
+    ).first()
+
+    return {
+        "charger_id": charger_id,
+        "is_favorite": exists is not None
+    }
+
+def midpoint(lat1, lon1, lat2, lon2):
+    return (lat1 + lat2) / 2, (lon1 + lon2) / 2
+
+
+def find_nearest_compatible_charger(
+    lat: float,
+    lon: float,
+    connector_type: str,
+    db: Session,
+    max_distance_km: float = 50
+):
+    chargers = db.query(Charger).all()
+
+    ct = connector_type.lower().replace(" ", "").replace("-", "")
+
+    compatible = [
+        c for c in chargers
+        if c.connector_type
+        and ct in c.connector_type.lower().replace(" ", "").replace("-", "")
+    ]
+
+    closest = None
+    min_dist = None
+
+    for c in compatible:
+        d = haversine_distance(lat, lon, c.latitude, c.longitude)
+        if d <= max_distance_km and (min_dist is None or d < min_dist):
+            closest = c
+            min_dist = d
+
+    return closest
+
+@app.post("/trips/plan")
+def plan_trip(
+    start_lat: float,
+    start_lon: float,
+    end_lat: float,
+    end_lon: float,
+    user=Depends(member_required),
+    db: Session = Depends(get_db)
+):
+    vehicle = db.query(Vehicle).filter(
+        Vehicle.user_id == user.id
+    ).first()
+
+    if not vehicle or not vehicle.range_km or not vehicle.connector_type:
+        raise HTTPException(
+            status_code=400,
+            detail="Vehicle with range and connector type required"
+        )
+
+    driving = calculate_driving_distance(
+        start_lat, start_lon, end_lat, end_lon
+    )
+
+    if not driving:
+        raise HTTPException(status_code=400, detail="Route calculation failed")
+
+    total_distance = driving["distance_km"]
+    duration = driving["duration_minutes"]
+
+    waypoints = []
+
+    if total_distance > vehicle.range_km:
+        mid_lat, mid_lon = midpoint(
+            start_lat, start_lon, end_lat, end_lon
+        )
+
+        charger = find_nearest_compatible_charger(
+            mid_lat,
+            mid_lon,
+            vehicle.connector_type,
+            db
+        )
+
+        if charger:
+            waypoints.append({
+                "id": charger.id,
+                "name": charger.name,
+                "latitude": charger.latitude,
+                "longitude": charger.longitude
+            })
+
+    trip = Trip(
+        user_id=user.id,
+        start_lat=start_lat,
+        start_lon=start_lon,
+        end_lat=end_lat,
+        end_lon=end_lon,
+        waypoints=json.dumps(waypoints),
+        total_distance_km=total_distance,
+        estimated_duration_minutes=duration
+    )
+
+    db.add(trip)
+    db.commit()
+    db.refresh(trip)
+
+    return trip
+
+@app.get("/trips")
+def get_my_trips(
+    user=Depends(member_required),
+    db: Session = Depends(get_db)
+):
+    return db.query(Trip).filter(
+        Trip.user_id == user.id
+    ).order_by(Trip.created_at.desc()).all()
+
+@app.delete("/trips/{trip_id}")
+def delete_trip(
+    trip_id: int,
+    user=Depends(member_required),
+    db: Session = Depends(get_db)
+):
+    trip = db.query(Trip).filter(
+        Trip.id == trip_id,
+        Trip.user_id == user.id
+    ).first()
+
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    db.delete(trip)
+    db.commit()
+
+    return {"message": "Trip deleted"}

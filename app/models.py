@@ -1,5 +1,6 @@
-from sqlalchemy import ForeignKey, Column, Integer, String, Float
+from sqlalchemy import ForeignKey, Column, Integer, String, Float,  DateTime
 from app.database import Base
+from datetime import datetime
 from sqlalchemy.orm import relationship
 
 class Charger(Base):
@@ -36,6 +37,32 @@ class Vehicle(Base):
     __tablename__ = "vehicles"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
     connector_type = Column(String, nullable=False)
+    range_km = Column(Float, nullable=True)
 
-    user_id = Column(Integer, ForeignKey("users.id"), unique=True)
+
+class Favorite(Base):
+    __tablename__ = "favorites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    charger_id = Column(Integer, ForeignKey("chargers.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class Trip(Base):
+    __tablename__ = "trips"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    start_lat = Column(Float, nullable=False)
+    start_lon = Column(Float, nullable=False)
+    end_lat = Column(Float, nullable=False)
+    end_lon = Column(Float, nullable=False)
+
+    waypoints = Column(String, default="[]")  # JSON string
+    total_distance_km = Column(Float)
+    estimated_duration_minutes = Column(Float)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
