@@ -697,7 +697,7 @@ def plan_trip(
     user: User = Depends(member_required),
     db: Session = Depends(get_db)
 ):
-    """Plan a trip with charging stops (simplified)."""
+    """Plan a trip with charging stops based on vehicle range."""
     vehicle = db.query(Vehicle).filter(Vehicle.user_id == user.id).first()
 
     if not vehicle or not vehicle.range_km or not vehicle.connector_type:
@@ -717,6 +717,114 @@ def plan_trip(
     total_distance = driving["distance_km"]
     duration = driving["duration_minutes"]
     waypoints = []
+    
+    # Calculate if charging stops are needed
+    if total_distance > vehicle.range_km:
+        # Find chargers along the route
+        # Get all chargers with matching connector type
+        chargers = db.query(Charger).all()
+        
+        # Filter by connector type
+        if vehicle.connector_type:
+            ct = vehicle.connector_type.lower().replace(" ", "").replace("-", "")
+            chargers = [
+                c for c in chargers
+                if c.connector_type and ct in c.connector_type.lower().replace(" ", "").replace("-", "")
+            ]
+        
+        # Filter by status (prefer working chargers)
+        working_chargers = [c for c in chargers if c.status == "working"]
+        if not working_chargers:
+            working_chargers = [c for c in chargers if c.status != "broken"]
+        
+        # Find chargers along the route (within reasonable distance from straight line)
+        route_chargers = []
+        for charger in working_chargers:
+            # Calculate distance from start
+            dist_from_start = haversine_distance(
+                trip_data.start_lat, trip_data.start_lon,
+                charger.latitude, charger.longitude
+            )
+            
+            # Calculate distance to end
+            dist_to_end = haversine_distance(
+                charger.latitude, charger.longitude,
+                trip_data.end_lat, trip_data.end_lon
+            )
+            
+            # Check if charger is roughly along the route (within 30% detour - increased tolerance)
+            total_via_charger = dist_from_start + dist_to_end
+            if total_via_charger <= total_distance * 1.3:  # Max 30% detour (increased from 20%)
+                route_chargers.append({
+                    "charger": charger,
+                    "distance_from_start": dist_from_start,
+                    "distance_to_end": dist_to_end
+                })
+        
+        # If no chargers found with 30% detour, try 50% detour
+        if not route_chargers:
+            for charger in working_chargers:
+                dist_from_start = haversine_distance(
+                    trip_data.start_lat, trip_data.start_lon,
+                    charger.latitude, charger.longitude
+                )
+                
+                dist_to_end = haversine_distance(
+                    charger.latitude, charger.longitude,
+                    trip_data.end_lat, trip_data.end_lon
+                )
+                
+                total_via_charger = dist_from_start + dist_to_end
+                if total_via_charger <= total_distance * 1.5:  # Max 50% detour
+                    route_chargers.append({
+                        "charger": charger,
+                        "distance_from_start": dist_from_start,
+                        "distance_to_end": dist_to_end
+                    })
+        
+        # Sort by distance from start
+        route_chargers.sort(key=lambda x: x["distance_from_start"])
+        
+        # Calculate charging stops needed
+        remaining_range = vehicle.range_km
+        distance_covered = 0
+        
+        for rc in route_chargers:
+            charger = rc["charger"]
+            dist_from_start = rc["distance_from_start"]
+            dist_to_end = rc["distance_to_end"]
+            
+            # Check if we can reach this charger with remaining range
+            distance_to_charger = dist_from_start - distance_covered
+            
+            if distance_to_charger <= remaining_range * 0.9:  # Use 90% of range for safety
+                # Check if we actually need this stop to reach the destination
+                # Can we reach destination from current position?
+                distance_to_destination = total_distance - distance_covered
+                
+                if distance_to_destination > remaining_range * 0.9:
+                    # We need to charge - add this stop
+                    waypoints.append({
+                        "charger_id": charger.id,
+                        "name": charger.name,
+                        "city": charger.city,
+                        "latitude": charger.latitude,
+                        "longitude": charger.longitude,
+                        "distance_from_start_km": round(dist_from_start, 2),
+                        "connector_type": charger.connector_type,
+                        "status": charger.status
+                    })
+                    
+                    # Update position and range after charging
+                    distance_covered = dist_from_start
+                    remaining_range = vehicle.range_km
+                    
+                    # Check if we can now reach destination
+                    if dist_to_end <= vehicle.range_km * 0.9:
+                        break  # We can reach destination from here
+        
+        # Limit to 5 charging stops max
+        waypoints = waypoints[:5]
 
     trip = Trip(
         user_id=user.id,

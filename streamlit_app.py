@@ -115,6 +115,7 @@ with st.sidebar:
             "🛣️ Plan Trip",
             "📊 Statistics",
             "📝 Write Review",
+            "💬 My Reviews",
             "🚨 Report Charger"
         ], label_visibility="collapsed")
         
@@ -533,16 +534,50 @@ elif page == "🛣️ Plan Trip":
             
             st.markdown("---")
             
+            # Tunisian cities for easy selection
+            tunisian_cities = {
+                "Tunis": (36.8065, 10.1815),
+                "Sfax": (34.7406, 10.7603),
+                "Sousse": (35.8256, 10.6369),
+                "Kairouan": (35.6781, 10.0963),
+                "Bizerte": (37.2746, 9.8739),
+                "Gabès": (33.8815, 10.0982),
+                "Ariana": (36.8625, 10.1956),
+                "Gafsa": (34.4250, 8.7842),
+                "Monastir": (35.7772, 10.8264),
+                "Custom": None
+            }
+            
             col1, col2 = st.columns(2)
             with col1:
-                st.markdown("### 📍 Start")
-                start_lat = st.number_input("Start Latitude", value=36.8, format="%.6f", key="start_lat")
-                start_lon = st.number_input("Start Longitude", value=10.1, format="%.6f", key="start_lon")
+                st.markdown("### 📍 Start Location")
+                start_method = st.radio("Start:", ["City", "Coordinates"], key="start_method", horizontal=True)
+                if start_method == "City":
+                    start_city = st.selectbox("Select start city", list(tunisian_cities.keys()), key="start_city")
+                    if start_city == "Custom":
+                        start_lat = st.number_input("Start Latitude", value=36.8, format="%.6f", key="start_lat")
+                        start_lon = st.number_input("Start Longitude", value=10.1, format="%.6f", key="start_lon")
+                    else:
+                        start_lat, start_lon = tunisian_cities[start_city]
+                        st.info(f"📍 {start_city}: {start_lat}, {start_lon}")
+                else:
+                    start_lat = st.number_input("Start Latitude", value=36.8, format="%.6f", key="start_lat_manual")
+                    start_lon = st.number_input("Start Longitude", value=10.1, format="%.6f", key="start_lon_manual")
             
             with col2:
-                st.markdown("### 🎯 End")
-                end_lat = st.number_input("End Latitude", value=36.9, format="%.6f", key="end_lat")
-                end_lon = st.number_input("End Longitude", value=10.2, format="%.6f", key="end_lon")
+                st.markdown("### 🎯 End Location")
+                end_method = st.radio("End:", ["City", "Coordinates"], key="end_method", horizontal=True)
+                if end_method == "City":
+                    end_city = st.selectbox("Select end city", list(tunisian_cities.keys()), key="end_city", index=1)
+                    if end_city == "Custom":
+                        end_lat = st.number_input("End Latitude", value=36.9, format="%.6f", key="end_lat")
+                        end_lon = st.number_input("End Longitude", value=10.2, format="%.6f", key="end_lon")
+                    else:
+                        end_lat, end_lon = tunisian_cities[end_city]
+                        st.info(f"🎯 {end_city}: {end_lat}, {end_lon}")
+                else:
+                    end_lat = st.number_input("End Latitude", value=36.9, format="%.6f", key="end_lat_manual")
+                    end_lon = st.number_input("End Longitude", value=10.2, format="%.6f", key="end_lon_manual")
             
             if st.button("🗺️ Plan Trip", type="primary"):
                 data, error = api_call("POST", "/trips/plan", json={
@@ -575,9 +610,22 @@ elif page == "🛣️ Plan Trip":
                     
                     waypoints = json.loads(data.get('waypoints', '[]'))
                     if waypoints:
-                        st.markdown("### ⚡ Suggested Charging Stops")
+                        st.markdown("### ⚡ Recommended Charging Stops")
+                        st.info(f"💡 {len(waypoints)} charging stop(s) recommended along your route")
+                        
                         for i, wp in enumerate(waypoints, 1):
-                            st.write(f"**Stop {i}:** {wp['name']}")
+                            with st.expander(f"🔌 Stop {i}: {wp['name']} - {wp['city']}", expanded=True):
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.write(f"**Location:** {wp['city']}")
+                                    st.write(f"**Connector:** {wp['connector_type']}")
+                                    st.write(f"**Status:** {wp['status'].replace('_', ' ').title()}")
+                                with col2:
+                                    st.write(f"**Distance from start:** {wp['distance_from_start_km']} km")
+                                    st.write(f"**Coordinates:** {wp['latitude']}, {wp['longitude']}")
+                    elif trip_distance > vehicle_range:
+                        st.warning("⚠️ No suitable charging stations found along your route!")
+                        st.info("💡 Try searching for chargers manually near your route.")
 
 # ============= STATISTICS =============
 elif page == "📊 Statistics":
@@ -641,6 +689,103 @@ elif page == "📝 Write Review":
                     st.error(f"Error: {error}")
                 else:
                     st.success("✅ Review submitted!")
+
+# ============= MY REVIEWS =============
+elif page == "💬 My Reviews":
+    if not st.session_state.token:
+        st.warning("Please login to view your reviews")
+    else:
+        st.markdown("## 💬 My Reviews")
+        
+        # Get current user ID
+        user_data, user_error = api_call("GET", "/users/me")
+        if user_error:
+            st.error(f"Error getting user info: {user_error}")
+        else:
+            user_id = user_data['id']
+            
+            # Get all chargers to find user's reviews
+            data, error = api_call("GET", "/chargers?limit=100")
+            if error:
+                st.error(f"Error loading chargers: {error}")
+            elif data and data.get('results'):
+                chargers = data['results']
+                
+                # Get reviews for each charger and filter by user
+                user_reviews = []
+                for charger in chargers:
+                    reviews_data, reviews_error = api_call("GET", f"/chargers/{charger['id']}/reviews")
+                    if reviews_data:
+                        for review in reviews_data:
+                            # Filter by current user's ID
+                            if review['user_id'] == user_id:
+                                user_reviews.append({
+                                    'review': review,
+                                    'charger': charger
+                                })
+                
+                if not user_reviews:
+                    st.info("📭 You haven't written any reviews yet!")
+                    st.markdown("Go to **📝 Write Review** to add your first review.")
+                else:
+                    st.success(f"✅ You have {len(user_reviews)} review(s)")
+                    
+                    for item in user_reviews:
+                        review = item['review']
+                        charger = item['charger']
+                        
+                        with st.expander(f"⭐ {review['rating']}/5 - {charger['name']} ({charger['city']})"):
+                            st.write(f"**Rating:** {'⭐' * review['rating']}")
+                            if review.get('comment'):
+                                st.write(f"**Comment:** {review['comment']}")
+                            if review.get('created_at'):
+                                st.write(f"**Posted:** {review['created_at'][:10]}")
+                            
+                            # Check if editing
+                            is_editing = st.session_state.get(f'editing_{review["id"]}', False)
+                            
+                            if not is_editing:
+                                col1, col2 = st.columns(2)
+                                
+                                # Edit Review
+                                with col1:
+                                    if st.button("✏️ Edit", key=f"edit_{review['id']}", use_container_width=True):
+                                        st.session_state[f'editing_{review["id"]}'] = True
+                                        st.rerun()
+                                
+                                # Delete Review
+                                with col2:
+                                    if st.button("🗑️ Delete", key=f"delete_{review['id']}", type="secondary", use_container_width=True):
+                                        _, err = api_call("DELETE", f"/reviews/{review['id']}")
+                                        if err:
+                                            st.error(f"Error: {err}")
+                                        else:
+                                            st.success("✅ Review deleted!")
+                                            st.rerun()
+                            else:
+                                # Edit form
+                                st.markdown("---")
+                                st.markdown("### ✏️ Edit Review")
+                                new_rating = st.slider("New Rating", 1, 5, review['rating'], key=f"rating_{review['id']}")
+                                new_comment = st.text_area("New Comment", value=review.get('comment', ''), max_chars=500, key=f"comment_{review['id']}")
+                                
+                                col_save, col_cancel = st.columns(2)
+                                with col_save:
+                                    if st.button("💾 Save Changes", key=f"save_{review['id']}", type="primary", use_container_width=True):
+                                        _, err = api_call("PUT", f"/reviews/{review['id']}", json={
+                                            "rating": new_rating,
+                                            "comment": new_comment if new_comment else None
+                                        })
+                                        if err:
+                                            st.error(f"Error: {err}")
+                                        else:
+                                            st.success("✅ Review updated!")
+                                            st.session_state[f'editing_{review["id"]}'] = False
+                                            st.rerun()
+                                with col_cancel:
+                                    if st.button("❌ Cancel", key=f"cancel_{review['id']}", use_container_width=True):
+                                        st.session_state[f'editing_{review["id"]}'] = False
+                                        st.rerun()
 
 # ============= REPORT CHARGER =============
 elif page == "🚨 Report Charger":
