@@ -40,7 +40,7 @@ A community-driven platform for finding and sharing electric vehicle charging st
 
 1. **Clone the repository**
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/yismin/EV-charging-tunisia.git
 cd ev-charging-tunisia
 ```
 
