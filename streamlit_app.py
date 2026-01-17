@@ -166,11 +166,66 @@ elif page == "🔍 Find Chargers":
     search_mode = st.radio("Search by:", ["📍 Location", "🔎 Filters"], horizontal=True)
     
     if search_mode == "📍 Location":
-        col1, col2 = st.columns(2)
-        with col1:
-            lat = st.number_input("Latitude", value=36.8, format="%.6f")
-        with col2:
-            lon = st.number_input("Longitude", value=10.1, format="%.6f")
+        st.markdown("### 🗺️ Choose Your Location")
+        
+        # Predefined Tunisian cities with coordinates
+        tunisian_cities = {
+            "Tunis": (36.8065, 10.1815),
+            "Sfax": (34.7406, 10.7603),
+            "Sousse": (35.8256, 10.6369),
+            "Kairouan": (35.6781, 10.0963),
+            "Bizerte": (37.2746, 9.8739),
+            "Gabès": (33.8815, 10.0982),
+            "Ariana": (36.8625, 10.1956),
+            "Gafsa": (34.4250, 8.7842),
+            "Monastir": (35.7772, 10.8264),
+            "Ben Arous": (36.7539, 10.2189),
+            "Kasserine": (35.1676, 8.8363),
+            "Médenine": (33.3549, 10.5055),
+            "Nabeul": (36.4561, 10.7376),
+            "Tataouine": (32.9297, 10.4517),
+            "Béja": (36.7256, 9.1817),
+            "Jendouba": (36.5011, 8.7805),
+            "Mahdia": (35.5047, 11.0622),
+            "Sidi Bouzid": (35.0381, 9.4858),
+            "Zaghouan": (36.4028, 10.1425),
+            "Siliana": (36.0853, 9.3706),
+            "Kef": (36.1743, 8.7148),
+            "Tozeur": (33.9197, 8.1338),
+            "Kebili": (33.7047, 8.9692),
+            "Custom Coordinates": None
+        }
+        
+        location_method = st.radio(
+            "How do you want to specify your location?",
+            ["🏙️ Select City", "📍 Enter Coordinates"],
+            horizontal=True
+        )
+        
+        if location_method == "🏙️ Select City":
+            selected_city = st.selectbox(
+                "Select a city",
+                list(tunisian_cities.keys()),
+                index=0
+            )
+            
+            if selected_city == "Custom Coordinates":
+                col1, col2 = st.columns(2)
+                with col1:
+                    lat = st.number_input("Latitude", value=36.8, format="%.6f", key="custom_lat")
+                with col2:
+                    lon = st.number_input("Longitude", value=10.1, format="%.6f", key="custom_lon")
+            else:
+                lat, lon = tunisian_cities[selected_city]
+                st.info(f"📍 {selected_city}: Latitude {lat}, Longitude {lon}")
+        
+        else:  # Enter Coordinates
+            st.info("💡 Tip: Tunisia coordinates are roughly Lat: 33-37, Lon: 8-11")
+            col1, col2 = st.columns(2)
+            with col1:
+                lat = st.number_input("Latitude", value=36.8, format="%.6f", help="Tunisia: 33 to 37")
+            with col2:
+                lon = st.number_input("Longitude", value=10.1, format="%.6f", help="Tunisia: 8 to 11")
         
         col1, col2, col3 = st.columns(3)
         with col1:
