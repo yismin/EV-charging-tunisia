@@ -2,7 +2,7 @@ fastapi
 uvicorn 
 psycopg2-binary 
 sqlalchemy 
-pydantic
+pydantic[email]
 pydantic-settings
 python-dotenv
 alembic
@@ -17,3 +17,6 @@ requests>=2.31.0
 folium>=0.14.0
 streamlit-folium>=0.15.0
 pandas>=2.0.0
+pytest>=7.0.0
+httpx>=0.24.0
+email-validator

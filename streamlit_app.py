@@ -14,7 +14,7 @@ import json
 API_BASE_URL = "http://127.0.0.1:8000"
 
 st.set_page_config(
-    page_title="EV Charging Tunisia",
+    page_title="Volty ⚡",
     page_icon="⚡",
     layout="wide"
 )
@@ -97,7 +97,8 @@ def create_map(chargers, center_lat=36.8, center_lon=10.1, zoom=7):
     return m
 
 # ============= HEADER =============
-st.title("⚡ EV Charging Tunisia")
+st.title("⚡ Volty")
+st.markdown("Powering Tunisia’s EVs")
 st.markdown("Find the nearest EV charging station in Tunisia")
 
 # ============= SIDEBAR =============
